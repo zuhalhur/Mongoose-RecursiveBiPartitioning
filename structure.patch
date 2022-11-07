@@ -1,0 +1,294 @@
+--- /home/zuhal/abcd/src/structure.cpp	2022-10-22 10:12:05.187800602 +0300
++++ /home/zuhal/structure.cpp	2022-10-22 10:43:14.472394286 +0300
+@@ -43,6 +43,9 @@
+ #include <fstream>
+ #include <vect_utils.h>
+ #include <boost/lambda/lambda.hpp>
++#include <vector>
++#include <queue>
++#include <map>
+ 
+ #ifdef PATOH
+ #include <patoh.h>
+@@ -50,7 +53,9 @@
+ 
+ // Numerically aware partitioning for BC
+ #include <GRIP.h>
++#include <Mongoose.hpp>
+ 
++using namespace Mongoose;
+ using namespace boost::lambda;
+ 
+ /*!
+@@ -67,6 +72,151 @@
+  *
+  */
+ 
++void divideGraph(Graph *graph, EdgeCut *result,EdgeCut_Options *option, int *maps,Graph **graph0, Graph **graph1)
++{
++    Int nNumber0=0;
++    Int nzNumber0=0;
++
++    Int nNumber1=0;
++    Int nzNumber1=0;
++
++    for (Int i = 0; i < graph->n; i++)
++    {
++        if(result-> partition[i] == 0)
++        {
++            nNumber0++;
++            for(Int j = graph->p[i] ; j < graph->p[i+1]; j++)
++            {
++                if(result->partition[graph->i[j]] == 0)
++                {
++                    nzNumber0++;
++                }
++            }
++        }
++        else
++        {
++            nNumber1++;
++            for(Int j = graph->p[i] ; j < graph->p[i+1]; j++)
++            {
++                if(result->partition[graph->i[j]] == 1)
++                {
++                    nzNumber1++;
++                }
++            }
++        }
++    }
++
++    Int *arrayI0 = new Int[nzNumber0];
++    Int *arrayP0 = new Int[nNumber0+1];
++    double *weight0 = new double[nzNumber0];
++
++    Int *arrayI1 = new Int[nzNumber1];
++    Int *arrayP1 = new Int[nNumber1+1];
++    double *weight1 = new double[nzNumber1];
++
++
++    int cnt0=0,cnt1=0;
++    // std::map<int, int> beforeAfterIndexes;
++    for (Int i = 0; i < graph->n; i++)
++    {
++        if(result-> partition[i] == 0)
++        {
++            maps[i] = cnt0++;
++        }
++        else
++        {
++            maps[i] = cnt1++;
++        }
++
++    }
++
++
++    int counterP0=1,counterP1=1;
++    arrayP0[0] =0;
++    arrayP1[0] =0;
++    int newnz0=0,newnz1=0;
++    for (int i = 0; i < graph->n; i++)
++    {
++        if(result-> partition[i] == 0)
++        {
++            for(Int j = graph->p[i]; j<graph->p[i + 1]; j++)
++            {
++                if(result->partition[graph->i[j]] == 0)
++                {
++                    weight0[newnz0]=graph->x[j];
++                    arrayI0[newnz0] = maps[graph->i[j]];
++                    newnz0++;
++                }
++            }
++            arrayP0[counterP0++] = newnz0;
++        }
++
++        if(result-> partition[i] == 1)
++        {
++            for(Int j = graph->p[i]; j<graph->p[i + 1]; j++)
++            {
++                if(result->partition[graph->i[j]] == 1)
++                {
++                    weight1[newnz1] = graph->x[j];
++                    arrayI1[newnz1] = maps[graph->i[j]];
++                    newnz1++;
++                }
++            }
++            arrayP1[counterP1++] = newnz1;
++        }
++
++    }
++
++    *(graph0) = Graph::create(nNumber0,nzNumber0,arrayP0,arrayI0,weight0,NULL);
++    *(graph1) = Graph::create(nNumber1,nzNumber1,arrayP1,arrayI1,weight1,NULL);
++
++}
++int recursiveMethod(Graph *graph,EdgeCut_Options *option, int *part,int nPart)
++{
++    if(nPart<=1)
++    {
++        return 1;
++    }
++    else
++    {
++
++        int i, lcnt, rcnt, *partleft, *partright;
++        Graph *pthleft, *pthright;
++        EdgeCut *result =edge_cut(graph,option);
++        int *maps = new int[graph->n];
++        divideGraph(graph,result,option,maps,&pthleft,&pthright);
++
++        partleft=new int[pthleft->n];
++        partright=new int[pthright->n];
++        for(int j=0; j<pthleft->n; j++)
++        {
++            partleft[j]=0;
++        }
++        for(int j=0; j<pthright->n; j++)
++        {
++            partright[j]=0;
++        }
++
++        lcnt=recursiveMethod(pthleft,option,partleft,nPart/2);
++        for(i=0; i<graph->n; i++)
++        {
++            if(result->partition[i] == 0)
++            {
++                part[i] = partleft[maps[i]];
++            }
++
++            rcnt=recursiveMethod(pthright,option,partright,nPart/2);
++            for(i=0; i<graph->n; i++)
++            {
++                if(result->partition[i] == 1)
++                {
++                    part[i] =lcnt + partright[maps[i]];
++                }
++            }
++            return lcnt+rcnt;
++        }
++    }
++
+ void abcd::partitionMatrix()
+ {
+     unsigned handled_rows = 0;
+@@ -399,6 +549,119 @@
+         delete[] partweights;
+         LINFO << "Done with Numerically Aware Partitioning, time : " << setprecision(6) << MPI_Wtime() - t << " s.";
+         break;
++
++    }
++    case 6:
++    {
++        double t = MPI_Wtime();
++        ColSparsing_thresh=1; // 0: no sparsifying,
++        // o.w. keep largest sqrt(n) * ColSparsing_thresh values in column
++        CompRow_Mat_double Ddrop = ColumnSparsifying(A);
++        LINFO << "Dense Columns Sparsifying Time " << MPI_Wtime() - t;
++
++        int *part = new int[n_o+1];
++        idx_t nParts = icntl[Controls::nbparts];
++        double imb = dcntl[Controls::part_imbalance];
++        CompRow_Mat_double AAT;
++        CompRow_Mat_double AT = csr_transpose(Ddrop);
++
++        double tt2 = MPI_Wtime();
++        AAT = spmm_overlap(Ddrop,AT);
++        double tt3 = MPI_Wtime();
++
++        int nnz_AAT = AAT.NumNonzeros();
++        cout<< "After SPMM nnz on AA^T " <<  nnz_AAT << " SPMM Time " << tt3-tt2 << endl; ;
++
++        int i,k,j;
++        int *jiro = AAT.rowptr_ptr();
++        int *jjco = AAT.colind_ptr();
++        double *jvalo = AAT.val_ptr();
++        int n_o = Ddrop.dim(0);
++
++        Int *adjncy;
++        idx_t objval;
++        double *ewgt, *vwgt;
++        Int *xadj  = new Int [n_o + 1];
++
++        for(int i = 0; i <= n_o; i++)
++        {
++            xadj[i] = 0;
++        }
++
++        adjncy = new Int[nnz_AAT];
++        double *tmp_val = new double[nnz_AAT];
++
++        int nz_new = 0;
++
++        // eliminate zero and diagonal values then fill tmp_val
++        for (k = 0; k < n_o; k++)
++        {
++            xadj[k+1] = xadj[k];
++            for (j =jiro[k]; j < jiro[k+1]; j++)
++            {
++                //if(val_[j] != 0 && jjco[j] != k)
++                if(jvalo[j] != 0)
++                {
++                    i = xadj[k+1]++;
++                    adjncy[i] = jjco[j];
++                    tmp_val[i] = jvalo[j];
++                }
++            }
++        }
++        nz_new = xadj[k];
++
++        ewgt = new double[nz_new];
++        for(int i = 0; i < nz_new; i++)
++        {
++            ewgt[i] = tmp_val[i];
++        }
++
++        delete[] tmp_val;
++        int sonuc=0;
++        double t2 = MPI_Wtime();
++        EdgeCut_Options *option = EdgeCut_Options::create();
++        Graph *newCreatedGraph = Graph::create(n_o,nnz_AAT,xadj,adjncy,ewgt,NULL);
++        double imb_ratio=pow(imb,(1/log2(nParts)))-1;
++        option->target_split =  0.50 -(imb_ratio/2);
++        //option->do_community_matching=true;
++        sonuc=recursiveMethod(newCreatedGraph,option,part,nParts);
++
++        delete[] xadj;
++        delete[] adjncy;
++
++        int *partweights = new int[nParts];
++        for(int z =0; z < nParts; z++)
++        {
++            partweights[z]=0;
++        }
++        for(int z =0; z < n_o; z++)
++        {
++            partweights[part[z]]++;
++        }
++        // Check no empty partitions
++        for (int i = 0; i <  icntl[Controls::nbparts]; i++)
++        {
++            // row_indices: stores indices of rows for each part
++            row_indices.push_back(vector<int>());
++            cout<<partweights[i]<<endl;
++            if (partweights[i] == 0)
++            {
++                info[Controls::status] = -6;
++                mpi::broadcast(comm, info[Controls::status], 0);
++                throw std::runtime_error("FATAL ERROR: METIS produced an empty partition, Try to reduce the imbalancing factor");
++            }
++        }
++
++        for(int zz=0; zz<n_o; zz++)
++        {
++            row_indices[part[zz]].push_back(zz);
++        }
++
++        delete[] part;
++        delete[] partweights;
++        cout << "Done with Numerically Aware Partitioning, time " << setprecision(6) << MPI_Wtime()-t2 << " cut " << " return "  << endl;
++
++        break;
+     }
+     default:
+     {
